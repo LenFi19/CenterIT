@@ -1,0 +1,15 @@
+services:
+  centerit:
+    build: .
+    container_name: centerit
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=file:/app/prisma/dev.db
+      - NEXT_PUBLIC_SERVER_ADDRESS=http://centerit
+    volumes:
+      - centerit_data:/app/prisma
+    restart: unless-stopped
+
+volumes:
+  centerit_data:
