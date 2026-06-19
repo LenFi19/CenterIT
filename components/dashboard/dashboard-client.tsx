@@ -1,7 +1,6 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
 import { Search, Shield, Star, StarOff } from "lucide-react";
 import { useMemo, useState, useEffect } from "react";
 
@@ -27,7 +26,6 @@ type DashboardClientProps = {
   services: DashboardService[];
   isAdmin: boolean;
   adminModeEnabled: boolean;
-  adminToken: string | null;
   settings: {
     dashboardTitle: string;
     logoUrl: string | null;
@@ -37,20 +35,30 @@ type DashboardClientProps = {
   };
 };
 
-export function DashboardClient({ services, isAdmin, adminModeEnabled, adminToken, settings }: DashboardClientProps) {
+export function DashboardClient({ services, isAdmin, adminModeEnabled, settings }: DashboardClientProps) {
   const [search, setSearch] = useState("");
-  const [statuses, setStatuses] = useState<Record<number, boolean>>({});
+  const [statuses, setStatuses] = useState<Record<number, "online" | "offline" | "unknown">>({});
+  const [adminTokenInput, setAdminTokenInput] = useState("");
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
+    let isDisposed = false;
+
     const loadStatus = async () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
       if (services.length === 0) {
-        setStatuses({});
+        if (!isDisposed) {
+          setStatuses({});
+        }
         return;
       }
 
       const ids = services.map((service) => service.id).join(",");
-      const tokenQuery = isAdmin && adminToken ? `&token=${encodeURIComponent(adminToken)}` : "";
-      const response = await fetch(`/api/services/status?ids=${ids}${tokenQuery}`, {
+      const response = await fetch(`/api/services/status?ids=${ids}`, {
         cache: "no-store",
       });
 
@@ -58,18 +66,68 @@ export function DashboardClient({ services, isAdmin, adminModeEnabled, adminToke
         return;
       }
 
-      const payload: { statuses: Record<string, boolean> } = await response.json();
+      const payload: { statuses: Record<string, "online" | "offline" | "unknown"> } = await response.json();
       const nextStatuses = Object.fromEntries(
         Object.entries(payload.statuses).map(([key, value]) => [Number(key), value]),
       );
-      setStatuses(nextStatuses);
+      if (!isDisposed) {
+        setStatuses(nextStatuses);
+      }
     };
 
     loadStatus();
-    const interval = window.setInterval(loadStatus, 30_000);
+    const interval = window.setInterval(loadStatus, 45_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        loadStatus();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
-    return () => window.clearInterval(interval);
-  }, [adminToken, isAdmin, services]);
+    return () => {
+      isDisposed = true;
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [services]);
+
+  const signInAdmin = async () => {
+    if (!adminTokenInput.trim()) {
+      setAuthError("Bitte Admin-Token eingeben.");
+      return;
+    }
+
+    setAuthError(null);
+    setIsAuthSubmitting(true);
+
+    try {
+      const response = await fetch("/api/auth/admin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ token: adminTokenInput }),
+      });
+
+      if (!response.ok) {
+        const payload: { error?: { message?: string } } = await response.json().catch(() => ({}));
+        setAuthError(payload.error?.message ?? "Admin-Anmeldung fehlgeschlagen.");
+        return;
+      }
+
+      setAdminTokenInput("");
+      window.location.reload();
+    } finally {
+      setIsAuthSubmitting(false);
+    }
+  };
+
+  const signOutAdmin = async () => {
+    await fetch("/api/auth/admin", {
+      method: "DELETE",
+    });
+    window.location.reload();
+  };
 
   const filteredServices = useMemo(() => {
     const loweredSearch = search.toLowerCase().trim();
@@ -136,22 +194,38 @@ export function DashboardClient({ services, isAdmin, adminModeEnabled, adminToke
           {adminModeEnabled && (
             <>
               {isAdmin ? (
-                <Link
-                  href="/"
+                <button
+                  type="button"
+                  onClick={signOutAdmin}
                   className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-700 px-3 text-sm font-medium transition-colors hover:border-[var(--accent-color)]"
                 >
                   <Shield className="h-4 w-4" />
-                  Als Gast anzeigen
-                </Link>
+                  Admin beenden
+                </button>
               ) : (
-                <div className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-700 px-3 text-sm font-medium text-zinc-400">
-                  <Shield className="h-4 w-4" />
-                  Admin: /?token=...
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="password"
+                    value={adminTokenInput}
+                    onChange={(event) => setAdminTokenInput(event.target.value)}
+                    placeholder="Admin-Token"
+                    className="h-10 w-48"
+                  />
+                  <button
+                    type="button"
+                    onClick={signInAdmin}
+                    disabled={isAuthSubmitting}
+                    className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-700 px-3 text-sm font-medium transition-colors hover:border-[var(--accent-color)] disabled:opacity-60"
+                  >
+                    <Shield className="h-4 w-4" />
+                    Admin anmelden
+                  </button>
                 </div>
               )}
             </>
           )}
         </header>
+        {authError ? <p className="text-sm text-red-400">{authError}</p> : null}
 
         <div className="relative">
           <Search className="pointer-events-none absolute left-3 top-3.5 h-4 w-4 text-zinc-500" />
@@ -189,14 +263,16 @@ export function DashboardClient({ services, isAdmin, adminModeEnabled, adminToke
 
 type ServiceGridProps = {
   services: DashboardService[];
-  statuses: Record<number, boolean>;
+  statuses: Record<number, "online" | "offline" | "unknown">;
 };
 
 function ServiceGrid({ services, statuses }: ServiceGridProps) {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {services.map((service) => {
-        const isOnline = statuses[service.id];
+        const status = statuses[service.id] ?? "unknown";
+        const badgeLabel = status === "online" ? "Online" : status === "offline" ? "Offline" : "Unbekannt";
+        const badgeVariant = status === "online" ? "success" : status === "offline" ? "destructive" : "default";
 
         return (
           <a
@@ -210,7 +286,7 @@ function ServiceGrid({ services, statuses }: ServiceGridProps) {
               <CardHeader>
                 <div className="flex items-start justify-between gap-2">
                   <CardTitle className="line-clamp-1">{service.name}</CardTitle>
-                  <Badge variant={isOnline ? "success" : "destructive"}>{isOnline ? "Online" : "Offline"}</Badge>
+                  <Badge variant={badgeVariant}>{badgeLabel}</Badge>
                 </div>
                 <CardDescription className="line-clamp-2">{service.description ?? "Keine Beschreibung"}</CardDescription>
               </CardHeader>

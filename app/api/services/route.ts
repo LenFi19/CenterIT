@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { createErrorResponse } from "@/lib/api-response";
 import { isAdminRequest } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { type NormalizedServicePayload, validateServicePayload } from "@/lib/service-payload";
 
 export async function GET(request: NextRequest) {
   const isAdmin = isAdminRequest(request);
@@ -17,46 +19,16 @@ export async function GET(request: NextRequest) {
   return NextResponse.json(services);
 }
 
-type ServicePayload = {
-  name: string;
-  description?: string;
-  url: string;
-  icon?: string;
-  categoryId?: number;
-  category?: string;
-  favorite?: boolean;
-  adminOnly?: boolean;
-  order?: number;
-};
-
-function validateServicePayload(payload: Partial<ServicePayload>) {
-  if (!payload.name?.trim()) {
-    return "Name ist erforderlich.";
-  }
-
-  if (!payload.url?.trim()) {
-    return "URL ist erforderlich.";
-  }
-
-  try {
-    new URL(payload.url);
-  } catch {
-    return "URL ist ungültig.";
-  }
-
-  return null;
-}
-
-async function buildCategoryInput(payload: ServicePayload) {
+async function buildCategoryInput(payload: NormalizedServicePayload) {
   if (typeof payload.categoryId === "number") {
     return { connect: { id: payload.categoryId } };
   }
 
-  if (payload.category?.trim()) {
+  if (payload.categoryName) {
     return {
       connectOrCreate: {
-        where: { name: payload.category.trim() },
-        create: { name: payload.category.trim() },
+        where: { name: payload.categoryName },
+        create: { name: payload.categoryName },
       },
     };
   }
@@ -66,33 +38,40 @@ async function buildCategoryInput(payload: ServicePayload) {
 
 export async function POST(request: NextRequest) {
   if (!isAdminRequest(request)) {
-    return NextResponse.json({ error: "Nicht autorisiert" }, { status: 403 });
+    return createErrorResponse("UNAUTHORIZED", "Nicht autorisiert.", 403);
   }
 
-  const payload = (await request.json()) as ServicePayload;
-  const validationError = validateServicePayload(payload);
-
-  if (validationError) {
-    return NextResponse.json({ error: validationError }, { status: 400 });
+  const payload = await request.json().catch(() => null);
+  if (!payload) {
+    return createErrorResponse("INVALID_JSON", "Body muss valides JSON sein.", 400);
   }
 
-  const service = await prisma.service.create({
-    data: {
-      name: payload.name.trim(),
-      description: payload.description?.trim() || null,
-      url: payload.url.trim(),
-      icon: payload.icon?.trim() || null,
-      favorite: Boolean(payload.favorite),
-      adminOnly: Boolean(payload.adminOnly),
-      order: payload.order ?? 0,
-      category: await buildCategoryInput(payload),
-    },
-    include: {
-      category: true,
-    },
-  });
+  const validatedPayload = validateServicePayload(payload);
+  if (!validatedPayload.success) {
+    return createErrorResponse("INVALID_PAYLOAD", validatedPayload.message, 400, validatedPayload.details);
+  }
 
-  return NextResponse.json(service, { status: 201 });
+  try {
+    const service = await prisma.service.create({
+      data: {
+        name: validatedPayload.data.name,
+        description: validatedPayload.data.description,
+        url: validatedPayload.data.url,
+        icon: validatedPayload.data.icon,
+        favorite: validatedPayload.data.favorite,
+        adminOnly: validatedPayload.data.adminOnly,
+        order: validatedPayload.data.order,
+        category: await buildCategoryInput(validatedPayload.data),
+      },
+      include: {
+        category: true,
+      },
+    });
+
+    return NextResponse.json(service, { status: 201 });
+  } catch {
+    return createErrorResponse("CREATE_FAILED", "Service konnte nicht erstellt werden.", 500);
+  }
 }
 
 export { buildCategoryInput, validateServicePayload };

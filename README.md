@@ -29,8 +29,8 @@ npm run dev
 - `PUT /api/services/[id]`
 - `DELETE /api/services/[id]`
 
-Schreibzugriffe benötigen `x-centerit-admin-token: <CENTERIT_ADMIN_TOKEN>`.
-Die Admin-Ansicht im Dashboard kann über `/?token=<CENTERIT_ADMIN_TOKEN>` aktiviert werden.
+Schreibzugriffe benötigen `x-centerit-admin-token: <CENTERIT_ADMIN_TOKEN>` oder eine aktive Admin-Session.
+Die Admin-Ansicht im Dashboard wird über die Token-Eingabe im Header aktiviert (ohne Token in der URL).
 
 ## Docker
 

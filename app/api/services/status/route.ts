@@ -1,49 +1,46 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { createErrorResponse } from "@/lib/api-response";
 import { isAdminRequest } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { checkServiceStatus, parseServiceIds, type ServiceHealthStatus } from "@/lib/service-status";
 
-async function checkServiceStatus(url: string): Promise<boolean> {
-  try {
-    const headResponse = await fetch(url, {
-      method: "HEAD",
-      cache: "no-store",
-      signal: AbortSignal.timeout(2500),
-    });
+const STATUS_CACHE_TTL_MS = 30_000;
+const STATUS_BATCH_SIZE = 8;
+const MAX_IDS_PER_REQUEST = 200;
 
-    if (headResponse.ok) {
-      return true;
-    }
-  } catch {
-    // ignored, fallback to GET request below
+type StatusCacheEntry = {
+  status: ServiceHealthStatus;
+  checkedAt: number;
+};
+
+declare global {
+  var centeritStatusCache: Map<number, StatusCacheEntry> | undefined;
+}
+
+function getStatusCache() {
+  if (!globalThis.centeritStatusCache) {
+    globalThis.centeritStatusCache = new Map<number, StatusCacheEntry>();
   }
-
-  try {
-    const getResponse = await fetch(url, {
-      method: "GET",
-      cache: "no-store",
-      signal: AbortSignal.timeout(2500),
-    });
-
-    return getResponse.ok;
-  } catch {
-    return false;
-  }
+  return globalThis.centeritStatusCache;
 }
 
 export async function GET(request: NextRequest) {
   const isAdmin = isAdminRequest(request);
+  const ids = parseServiceIds(request.nextUrl.searchParams.get("ids"));
 
-  const ids = request.nextUrl.searchParams
-    .get("ids")
-    ?.split(",")
-    .map((id) => Number(id))
-    .filter((id) => Number.isInteger(id) && id > 0);
+  if (ids && ids.length > MAX_IDS_PER_REQUEST) {
+    return createErrorResponse(
+      "TOO_MANY_IDS",
+      `Maximal ${MAX_IDS_PER_REQUEST} IDs pro Anfrage erlaubt.`,
+      400,
+    );
+  }
 
   const services = await prisma.service.findMany({
     where: {
       ...(isAdmin ? {} : { adminOnly: false }),
-      ...(ids && ids.length > 0 ? { id: { in: ids } } : {}),
+      ...(ids ? { id: { in: ids } } : {}),
     },
     select: {
       id: true,
@@ -51,9 +48,38 @@ export async function GET(request: NextRequest) {
     },
   });
 
-  const statusEntries = await Promise.all(
-    services.map(async (service) => [service.id, await checkServiceStatus(service.url)] as const),
-  );
+  const now = Date.now();
+  const cache = getStatusCache();
+  const statuses: Record<number, ServiceHealthStatus> = {};
+  const toCheck: Array<{ id: number; url: string }> = [];
 
-  return NextResponse.json({ statuses: Object.fromEntries(statusEntries) });
+  for (const service of services) {
+    const cached = cache.get(service.id);
+    if (cached && now - cached.checkedAt < STATUS_CACHE_TTL_MS) {
+      statuses[service.id] = cached.status;
+      continue;
+    }
+    statuses[service.id] = "unknown";
+    toCheck.push(service);
+  }
+
+  for (let index = 0; index < toCheck.length; index += STATUS_BATCH_SIZE) {
+    const batch = toCheck.slice(index, index + STATUS_BATCH_SIZE);
+    const batchResult = await Promise.all(
+      batch.map(async (service) => {
+        const status = await checkServiceStatus(service.url);
+        return { id: service.id, status };
+      }),
+    );
+
+    for (const result of batchResult) {
+      statuses[result.id] = result.status;
+      cache.set(result.id, {
+        status: result.status,
+        checkedAt: now,
+      });
+    }
+  }
+
+  return NextResponse.json({ statuses });
 }

@@ -1,46 +1,60 @@
 import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
+import { buildCategoryInput } from "@/app/api/services/route";
+import { createErrorResponse } from "@/lib/api-response";
 import { isAdminRequest } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-
-import { buildCategoryInput, validateServicePayload } from "@/app/api/services/route";
+import { validateServicePayload } from "@/lib/service-payload";
 
 type RouteParams = {
   params: Promise<{ id: string }>;
 };
 
+function parseServiceId(id: string) {
+  const serviceId = Number(id);
+  if (!Number.isInteger(serviceId) || serviceId < 1) {
+    return null;
+  }
+  return serviceId;
+}
+
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   if (!isAdminRequest(request)) {
-    return NextResponse.json({ error: "Nicht autorisiert" }, { status: 403 });
+    return createErrorResponse("UNAUTHORIZED", "Nicht autorisiert.", 403);
   }
 
   const { id } = await params;
-  const serviceId = Number(id);
-
-  if (!Number.isInteger(serviceId) || serviceId < 1) {
-    return NextResponse.json({ error: "Ungültige Service-ID" }, { status: 400 });
+  const serviceId = parseServiceId(id);
+  if (!serviceId) {
+    return createErrorResponse("INVALID_ID", "Ungültige Service-ID.", 400);
   }
 
-  const payload = await request.json();
-  const validationError = validateServicePayload(payload);
+  const payload = await request.json().catch(() => null);
+  if (!payload) {
+    return createErrorResponse("INVALID_JSON", "Body muss valides JSON sein.", 400);
+  }
 
-  if (validationError) {
-    return NextResponse.json({ error: validationError }, { status: 400 });
+  const validatedPayload = validateServicePayload(payload);
+  if (!validatedPayload.success) {
+    return createErrorResponse("INVALID_PAYLOAD", validatedPayload.message, 400, validatedPayload.details);
   }
 
   try {
     const service = await prisma.service.update({
       where: { id: serviceId },
       data: {
-        name: payload.name.trim(),
-        description: payload.description?.trim() || null,
-        url: payload.url.trim(),
-        icon: payload.icon?.trim() || null,
-        favorite: Boolean(payload.favorite),
-        adminOnly: Boolean(payload.adminOnly),
-        order: payload.order ?? 0,
-        category: payload.categoryId || payload.category ? await buildCategoryInput(payload) : { disconnect: true },
+        name: validatedPayload.data.name,
+        description: validatedPayload.data.description,
+        url: validatedPayload.data.url,
+        icon: validatedPayload.data.icon,
+        favorite: validatedPayload.data.favorite,
+        adminOnly: validatedPayload.data.adminOnly,
+        order: validatedPayload.data.order,
+        category:
+          validatedPayload.data.categoryId || validatedPayload.data.categoryName
+            ? await buildCategoryInput(validatedPayload.data)
+            : { disconnect: true },
       },
       include: {
         category: true,
@@ -50,23 +64,21 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     return NextResponse.json(service);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
-      return NextResponse.json({ error: "Service nicht gefunden" }, { status: 404 });
+      return createErrorResponse("NOT_FOUND", "Service nicht gefunden.", 404);
     }
-
-    throw error;
+    return createErrorResponse("UPDATE_FAILED", "Service konnte nicht aktualisiert werden.", 500);
   }
 }
 
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   if (!isAdminRequest(request)) {
-    return NextResponse.json({ error: "Nicht autorisiert" }, { status: 403 });
+    return createErrorResponse("UNAUTHORIZED", "Nicht autorisiert.", 403);
   }
 
   const { id } = await params;
-  const serviceId = Number(id);
-
-  if (!Number.isInteger(serviceId) || serviceId < 1) {
-    return NextResponse.json({ error: "Ungültige Service-ID" }, { status: 400 });
+  const serviceId = parseServiceId(id);
+  if (!serviceId) {
+    return createErrorResponse("INVALID_ID", "Ungültige Service-ID.", 400);
   }
 
   try {
@@ -74,9 +86,8 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ success: true });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
-      return NextResponse.json({ error: "Service nicht gefunden" }, { status: 404 });
+      return createErrorResponse("NOT_FOUND", "Service nicht gefunden.", 404);
     }
-
-    throw error;
+    return createErrorResponse("DELETE_FAILED", "Service konnte nicht gelöscht werden.", 500);
   }
 }
