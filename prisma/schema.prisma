@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  GUEST
+  ADMIN
+}
+
+model Category {
+  id        Int       @id @default(autoincrement())
+  name      String    @unique
+  sortOrder Int       @default(0)
+  services  Service[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Service {
+  id          Int       @id @default(autoincrement())
+  name        String
+  description String
+  url         String
+  icon        String
+  favorite    Boolean   @default(false)
+  adminOnly   Boolean   @default(false)
+  sortOrder   Int       @default(0)
+  categoryId  Int
+  category    Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([categoryId])
+  @@index([favorite])
+  @@index([adminOnly])
+}
+
+model Settings {
+  id                Int      @id @default(1)
+  title             String   @default("CenterIT")
+  logoUrl           String?
+  accentColor       String   @default("#22d3ee")
+  darkMode          Boolean  @default(true)
+  showServerAddress Boolean  @default(true)
+  serverAddress     String   @default("http://centerit")
+  updatedAt         DateTime @updatedAt
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique
+  role      UserRole @default(GUEST)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

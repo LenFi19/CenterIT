@@ -1,0 +1,11 @@
+services:
+  centerit:
+    build: .
+    container_name: centerit
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: file:/app/data/dev.db
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
